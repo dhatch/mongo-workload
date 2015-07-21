@@ -21,7 +21,7 @@ const PRIMARY = "127.0.0.1:30000"
 const NUM_CLIENTS = 100
 
 // Workload parameters
-const WRITE_PERCENTAGE = 0.60 // Percent of operations that are writes
+const WRITE_PERCENTAGE = 0.70 // Percent of operations that are writes
 
 // Write parameters
 //
@@ -39,6 +39,9 @@ type Stats struct {
 	totalReads         uint64
 	totalDocumentsRead uint64
 	totalWrites        uint64
+	totalUpdates       uint64
+	totalDeletions     uint64
+	totalInsertions    uint64
 }
 
 // The function simulate simulates a workload for a single client.
@@ -61,31 +64,30 @@ func simulate(group int64, nextNumber *int64, stats *Stats, ch chan int) {
 		c := session.DB("test").C("workload")
 		number := rand_source.Int63n(atomic.LoadInt64(nextNumber))
 		if rand_source.Float32() <= WRITE_PERCENTAGE {
+			atomic.AddUint64(&(stats.totalWrites), 1)
 			insert_type := rand_source.Float32()
 			if insert_type <= DELETE_PERCENTAGE {
-				// Perform a
+				// Perform a deletion
 				atomic.AddUint64(&(stats.totalReads), 1)
 				number := rand_source.Int63n(atomic.LoadInt64(nextNumber))
-				query := c.Find(bson.M{"number": number}).Limit(1)
-				count, err := query.Count()
+				err := c.Remove(bson.M{"number": number})
+				atomic.AddUint64(&stats.totalUpdates, 1)
 				if err != nil {
-					panic(err)
+					//log.Fatal(err)
 				}
-
-				if count == 0 {
-					atomic.AddUint64(&(stats.emptyReads), 1)
-					log.Print("empty read")
-				} else {
-					log.Print("read", count)
-				}
-				atomic.AddUint64(&(stats.totalDocumentsRead), uint64(count))
-				query.Iter()
 			} else if insert_type <= UPDATE_PERCENTAGE+DELETE_PERCENTAGE {
-
+				// Perform an update
+				atomic.AddUint64(&stats.totalReads, 1)
+				number := rand_source.Int63n(atomic.LoadInt64(nextNumber))
+				err := c.Update(bson.M{"number": number}, bson.M{"$inc": bson.M{"number": 1}})
+				atomic.AddUint64(&(stats.totalDeletions), 1)
+				if err != nil {
+					//log.Fatal(err)
+				}
 			} else {
 				// Perform an insertion
+				atomic.AddUint64(&stats.totalInsertions, 1)
 				atomic.AddInt64(nextNumber, 1)
-				atomic.AddUint64(&(stats.totalWrites), 1)
 				err = c.Insert(&TestData{number, group})
 				if err != nil {
 					log.Fatal(err)
@@ -119,7 +121,7 @@ func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	c := make(chan int, runtime.NumCPU())
-	stats := Stats{0, 0, 0, 0}
+	stats := Stats{0, 0, 0, 0, 0, 0, 0}
 
 	nextNumber := int64(1000)
 	for i := int64(0); i < NUM_CLIENTS; i++ {
@@ -138,5 +140,7 @@ func main() {
 	fmt.Println("Write percentage: ", float64(stats.totalWrites)/float64(stats.totalWrites+stats.totalReads))
 	fmt.Println("Empty read percentage: ", float64(stats.emptyReads)/float64(stats.totalReads))
 	fmt.Println("Total documents read: ", stats.totalDocumentsRead)
-	fmt.Println("Total documents written: ", stats.totalWrites)
+	fmt.Println("Total documents written: ", stats.totalInsertions)
+	fmt.Println("Total documents updated: ", stats.totalUpdates)
+	fmt.Println("Total documents deleted: ", stats.totalDeletions)
 }
